@@ -596,7 +596,7 @@ function renderLoading(container) {
   container.innerHTML='<p class="muted">در حال دریافت و ترجمه به فارسی…</p>';
 }
 
-async function renderItems(container,items) {
+async function renderItems(container,items,sourceLanguage="en") {
   if(!items?.length) {
     container.innerHTML='<p class="muted">برای این تاریخ موردی در منبع پیدا نشد.</p>';
     return;
@@ -615,7 +615,9 @@ async function renderItems(container,items) {
 
   for(const item of selected) {
     const original=item.text||item.pages?.[0]?.titles?.normalized||"بدون توضیح";
-    const translated=await translateToPersian(original);
+    const translated=sourceLanguage==="fa"
+      ?{text:original,translated:true}
+      :await translateToPersian(original);
 
     if(translated.translated)translatedCount++;
 
@@ -675,7 +677,7 @@ async function loadWikipedia(dt) {
   await Promise.all(targets.map(async ([id,type])=>{
     try {
       const data=await fetchOnThisDay(type,mm,dd);
-      await renderItems($(id),data[type]||[]);
+      await renderItems($(id),data[type]||[],data._sourceLanguage||"en");
     } catch(error) {
       let message="دریافت اطلاعات ناموفق بود.";
 
