@@ -106,7 +106,7 @@ footer{text-align:center;color:var(--muted);font-size:12px;padding:20px}
 
 <footer>
   آینه | اطلس نمادین تاریخ تولد<br>
-  رویدادها از ویکی‌پدیا دریافت می‌شوند و ترجمهٔ فارسی آن‌ها در صورت دسترسی انجام می‌شود.
+  اطلاعات ابتدا از ویکی‌پدیای فارسی دریافت می‌شوند؛ در نبود آن، ترجمه فارسی منبع جایگزین انجام می‌شود.
 </footer>
 
 <button class="about-btn" id="aboutBtn" type="button">درباره من</button>
@@ -465,18 +465,32 @@ const translationCache=new Map();
 
 async function translateChunk(text) {
   const clean=String(text||"").trim();
-  if(!clean)return clean;
+  if(!clean)return "";
 
   if(translationCache.has(clean))return translationCache.get(clean);
+
+  /* سرویس اول: Google Translate؛ سرویس دوم: MyMemory */
+  try {
+    const url="https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=fa&dt=t&q="+
+      encodeURIComponent(clean);
+    const data=await requestJSON(url,12000);
+    const result=Array.isArray(data?.[0])
+      ?data[0].map(part=>part?.[0]||"").join("").trim()
+      :"";
+    if(result) {
+      translationCache.set(clean,result);
+      return result;
+    }
+  } catch(error) {
+    // تلاش با سرویس جایگزین
+  }
 
   try {
     const url="https://api.mymemory.translated.net/get?q="+
       encodeURIComponent(clean)+"&langpair=en%7Cfa";
-
     const data=await requestJSON(url,12000);
     const translated=data?.responseData?.translatedText;
     const status=Number(data?.responseStatus);
-
     if(translated&&status===200) {
       const result=decodeTranslation(translated);
       if(result) {
@@ -485,11 +499,12 @@ async function translateChunk(text) {
       }
     }
   } catch(error) {
-    // اگر سرویس ترجمه پاسخ ندهد، متن اصلی استفاده می‌شود.
+    // هر دو سرویس ترجمه ممکن است موقتاً در دسترس نباشند.
   }
 
-  translationCache.set(clean,clean);
-  return clean;
+  /* متن انگلیسی هرگز به‌عنوان ترجمه ذخیره یا نمایش داده نمی‌شود. */
+  translationCache.set(clean,"");
+  return "";
 }
 
 function decodeTranslation(text) {
@@ -500,21 +515,17 @@ function decodeTranslation(text) {
 
 async function translateToPersian(text) {
   const original=String(text||"").trim();
-  if(!original)return {text:original,translated:true};
+  if(!original)return {text:"",translated:false};
 
   if(translationCache.has(original)) {
     const cached=translationCache.get(original);
-    return {text:cached,translated:cached!==original};
+    return {text:cached,translated:Boolean(cached)};
   }
 
-  /*
-    برای جلوگیری از محدودیت طول درخواست، متن‌های طولانی
-    در محل پایان جمله یا فاصله تقسیم می‌شوند.
-  */
   const limit=430;
   if(original.length<=limit) {
     const result=await translateChunk(original);
-    return {text:result,translated:result!==original};
+    return {text:result,translated:Boolean(result)};
   }
 
   const chunks=[];
@@ -524,26 +535,28 @@ async function translateToPersian(text) {
     let cut=remaining.lastIndexOf(". ",limit);
     if(cut<180)cut=remaining.lastIndexOf(" ",limit);
     if(cut<100)cut=limit;
-
     chunks.push(remaining.slice(0,cut).trim());
     remaining=remaining.slice(cut).trim();
   }
-
   if(remaining)chunks.push(remaining);
 
   const translatedParts=[];
   for(const chunk of chunks) {
-    translatedParts.push(await translateChunk(chunk));
+    const part=await translateChunk(chunk);
+    if(!part)return {text:"",translated:false};
+    translatedParts.push(part);
   }
 
-  const result=translatedParts.join(" ");
+  const result=translatedParts.join(" ").trim();
   translationCache.set(original,result);
-
-  return {text:result,translated:result!==original};
+  return {text:result,translated:Boolean(result)};
 }
 
 async function fetchOnThisDay(type,mm,dd) {
+  /* اولویت با ویکی‌پدیای فارسی است؛ انگلیسی فقط منبع جایگزین است. */
   const urls=[
+    `https://fa.wikipedia.org/api/rest_v1/feed/onthisday/${type}/${mm}/${dd}`,
+    `https://api.wikimedia.org/feed/v1/wikipedia/fa/onthisday/${type}/${mm}/${dd}`,
     `https://en.wikipedia.org/api/rest_v1/feed/onthisday/${type}/${mm}/${dd}`,
     `https://api.wikimedia.org/feed/v1/wikipedia/en/onthisday/${type}/${mm}/${dd}`
   ];
@@ -552,7 +565,11 @@ async function fetchOnThisDay(type,mm,dd) {
 
   for(const url of urls) {
     try {
-      return await requestJSON(url);
+      const data=await requestJSON(url);
+      if(Array.isArray(data?.[type])) {
+        data._sourceLanguage=url.includes("/fa/")||url.includes("fa.wikipedia.org")?"fa":"en";
+        return data;
+      }
     } catch(error) {
       lastError=error;
     }
@@ -613,7 +630,7 @@ async function renderItems(container,items) {
 
   container.innerHTML="<ul>"+results.map(item=>{
     const year=item.year
-      ?`<b class="highlight">${safe(item.year)}</b> — `
+      ?`<b class="highlight">${fa(Number(item.year))}</b> — `
       :"";
 
     const link=item.link
@@ -622,10 +639,13 @@ async function renderItems(container,items) {
 
     const translationNote=item.translated
       ?""
-      :'<div class="translation-note">ترجمه در دسترس نبود؛ متن اصلی نمایش داده شده است.</div>';
+      :'<div class="translation-note">ترجمه فارسی این مورد در دسترس نیست.</div>';
+    const displayText=item.translated
+      ?item.text
+      :"اطلاعات فارسی این مورد فعلاً در دسترس نیست.";
 
     return `<li>
-      ${year}<span class="item-text" lang="fa">${safe(item.text)}</span>
+      ${year}<span class="item-text" lang="fa">${safe(displayText)}</span>
       ${link}
       ${translationNote}
     </li>`;
